@@ -1,0 +1,22 @@
+services:
+  model:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
+    command: >
+      -m /models/model.gguf
+      -c 4096
+      --host 0.0.0.0
+      --port 8080
+
+  controller:
+    build: ./controller
+    ports:
+      - "3000:3000"
+    environment:
+      - MODEL_BASE_URL=http://model:8080
+    depends_on:
+      - model
+
