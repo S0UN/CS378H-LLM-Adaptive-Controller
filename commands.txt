@@ -1,3 +1,7 @@
 docker compose up --build
 
 curl -s http://localhost:3000/health
+
+curl -s http://localhost:8080/completion \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Say hello in one short sentence.","n_predict":50,"temperature":0.8}'
