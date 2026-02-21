@@ -1,35 +1,23 @@
-import os
-from openai import OpenAI
+from agents import Agent, Runner
 from dotenv import load_dotenv
-from agents import Agent, Runner, Tool
+
+import agentTools
 import prompts
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_KEY"))
-
-model = "gpt-4o"
-temperature = 0.0
-max_tokens = 1000
-
-system_prompt = prompts.system_prompt
-prompt = prompts.generate_prompt()
-
-def grader_results():
-    completion = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    return completion.choices[0].message.content
-
 agent = Agent(
     name="Grader",
-    system_prompt=system_prompt,
-    model=model,
-    tools=[],
+    instructions=prompts.build_quantization_instructions,
+    model="gpt-4o",
+    tools=[agentTools.record_attempt, agentTools.get_optimization_history],
+    output_type=agentTools.QuantizationRecommendation,
 )
+
+async def agent_runner():
+    result = await Runner.run(
+        agent,
+        "Start the optimization loop",
+        context={"gold" : "populate after chotes is done", "first_iteration" : "populate after chotes is done"}
+    )
+    print(result.final_output)
