@@ -1,0 +1,4 @@
+inference -> grader -> scores -> nueral net -> changes knobs -> inference
+
+learn how to make a nureal net and what is really needed to make a proper training set
+how to create a proper training set

@@ -1,6 +1,7 @@
 import os
 from openai import OpenAI
 from dotenv import load_dotenv
+from agents import Agent, Runner, Tool
 import prompts
 
 load_dotenv()
@@ -25,3 +26,10 @@ def grader_results():
         max_tokens=max_tokens,
     )
     return completion.choices[0].message.content
+
+agent = Agent(
+    name="Grader",
+    system_prompt=system_prompt,
+    model=model,
+    tools=[],
+)
