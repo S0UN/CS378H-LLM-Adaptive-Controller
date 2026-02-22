@@ -4,7 +4,7 @@ import requests
 from datasets import DatasetDict
 from dataset import DatasetService
 from model_manager import ModelDownloader
-
+from logging_service import LoggingService
 # Type aliases for clarity
 Turn      = dict[str, str]           # {"input": ..., "output": ...} or {"from": ..., "value": ...}
 TurnResult = dict[str, str | None]   # {"input": ..., "expected_output": ..., "inference_output": ...}
@@ -17,6 +17,7 @@ class InferenceLoopService:
     model_name:       str
     model_downloader: ModelDownloader
     compose_dir:      str
+    logging_service: LoggingService
 
     def __init__(
         self,
@@ -36,6 +37,7 @@ class InferenceLoopService:
         self.model_name       = model_name
         self.model_downloader = model_downloader
         self.compose_dir      = compose_dir
+        self.logging_service = LoggingService()
 
         # Download the model if not already cached
         self.model_downloader.download(model_name)
@@ -52,12 +54,44 @@ class InferenceLoopService:
         for row in self.dataset[split]:
             conversation: list[Turn] = row.get("conversation", row.get("conversations", []))
             results = self.run_conversation(conversation, server_url)
+            record: Dict[str, Union[str, float]] = #openAI call
+            self.logging_service.record_attempt(suggested_model)
 
-            # TODO: connect results to grader here
+            while not found_optimal_model():
+                self.load_model(suggested_model)
+                results = self.run_conversation(conversation,server_url)
+                record: Dict[str, Union[str, float]] = #openAI call
+                self.logging_service.record_attempt(record)
+            
+            self.logging_service.clear()
 
             all_results.append(results)
+            
 
         return all_results
+
+    def found_optimal_model(self) -> bool:
+      log = self.logging_service.get_optimization_history()
+
+      if not isinstance(log, list) or len(log) < 2:
+          return False
+
+      quant_n = log[-1].get("quant")
+      quant_n_minus_1 = log[-2].get("quant")
+
+      # Back-to-back repeat
+      if quant_n == quant_n_minus_1:
+          return True
+
+      # Repeat at n and n-2
+      if len(log) >= 3:
+          quant_n_minus_2 = log[-3].get("quant")
+          if quant_n == quant_n_minus_2:
+              return True
+
+      return False
+
+
 
     def run_conversation(self, conversation: list[Turn], server_url: str) -> list[TurnResult]:
         """Run a multi-turn conversation, feeding the model's own output back as context each turn."""
@@ -102,6 +136,7 @@ class InferenceLoopService:
             except Exception as e:
                 print(f"Inference error on turn '{user_msg[:60]}...': {e}")
 
+            #at the top of results, remember to put the system promopt and at the bottom of result, put the inference model that outputte this. 
             results.append({
                 "input":            user_msg,
                 "expected_output":  expected,
