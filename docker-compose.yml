@@ -6,8 +6,8 @@ services:
     volumes:
       - ./models:/models:ro
     command: >
-      -m /models/model.gguf
-      -c 4096
+      -m /models/${MODEL_FILE:-model.gguf}
+      -c ${CTX:-4096}
       --host 0.0.0.0
       --port 8080
 
