@@ -1,16 +1,19 @@
 import subprocess
 import os
+import time
 import requests
-from dataset import DatasetDict
+from datasets import DatasetDict          # HuggingFace datasets library (was wrongly "from dataset import DatasetDict")
 from dataset import DatasetService
 from model_manager import ModelDownloader
 from logging_service import LoggingService
 from results_logging_service import ResultsLoggingService
 from grader.agent import GraderService
+
 # Type aliases for clarity
-Turn      = dict[str, str]           # {"input": ..., "output": ...} or {"from": ..., "value": ...}
-TurnResult = dict[str, str | None]   # {"input": ..., "expected_output": ..., "inference_output": ...}
-Message   = dict[str, str]           # {"role": ..., "content": ...}
+Turn       = dict[str, str]           # {"input": ..., "output": ...} or {"from": ..., "value": ...}
+TurnResult = dict[str, str | None]    # {"input": ..., "expected_output": ..., "inference_output": ...}
+Message    = dict[str, str]           # {"role": ..., "content": ...}
+
 
 class InferenceLoopService:
 
@@ -18,9 +21,10 @@ class InferenceLoopService:
     model_name:       str
     model_downloader: ModelDownloader
     compose_dir:      str
-    logging_service: LoggingService
-    result_store : ResultsLoggingService
-    grader : GraderService
+    logging_service:  LoggingService
+    result_store:     ResultsLoggingService
+    grader:           GraderService
+    model_list:       list[str]
 
     def __init__(
         self,
@@ -40,71 +44,91 @@ class InferenceLoopService:
         self.model_name       = model_name
         self.model_downloader = model_downloader
         self.compose_dir      = compose_dir
-        self.logging_service = LoggingService()
-        self.result_store = ResultsLoggingService()
-        self.grader = GraderService()
-        self.model_list = []
-        
-        # Download the model if not already cached
+        self.logging_service  = LoggingService()
+        self.result_store     = ResultsLoggingService()
+        self.grader           = GraderService()
+
+        # Populate the list of available model filenames from the HuggingFace repo
+        # so the grader can reference them when recommending the next quantization.
+        self.model_list = self.model_downloader.list_available()
+
+        # Download the starting model if not already cached
         self.model_downloader.download(model_name)
+
+    def _wait_for_model_ready(self, timeout: int = 3600, poll_interval: int = 3) -> None:
+        """Block until the llama.cpp server responds, or raise after timeout seconds."""
+        print(f"Waiting for model server to be ready (up to {timeout}s)...")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.get_running_model() is not None:
+                print("Model server is ready.")
+                return
+            time.sleep(poll_interval)
+        raise TimeoutError(
+            f"Model server did not become ready within {timeout} seconds."
+        )
 
     def run(self) -> ResultsLoggingService:
         """Load the model into Docker then run the full inference loop over the dataset."""
         self.load_model()
+        self._wait_for_model_ready()
 
-        server_url  = os.environ.get("MODEL_BASE_URL", "http://localhost:8080")
+        server_url = os.environ.get("MODEL_BASE_URL", "http://localhost:8080")
 
         split = "train" if "train" in self.dataset else list(self.dataset.keys())[0]
 
         for row in self.dataset[split]:
             conversation: list[Turn] = row.get("conversation", row.get("conversations", []))
+
+            # ── First inference pass with the starting model ──────────────────
             results = self.run_conversation(conversation, server_url)
-            record = self.grader.run(
+            record  = self.grader.run(
                 optimization_log=self.logging_service.get_optimization_history(),
                 last_inference=results,
+                model_names=self.model_list,   # was incorrectly "model_list="
             )
             self.logging_service.record_attempt(record)
 
+            # ── Optimization loop ─────────────────────────────────────────────
             while not self.found_optimal_model():
                 recent: str = self.logging_service.get_most_recent_suggestion()
-                self.load_model(recent)
-                results = self.run_conversation(conversation,server_url)
-                record = self.grader.run(
+                self.load_model(recent)        # now accepts an optional model_name arg
+                results = self.run_conversation(conversation, server_url)
+                record  = self.grader.run(
                     optimization_log=self.logging_service.get_optimization_history(),
                     last_inference=results,
-                    model_list=self.model_list
+                    model_names=self.model_list,
                 )
                 self.logging_service.record_attempt(record)
-            
-            self.logging_service.clear()
 
+            self.logging_service.clear()
             self.result_store.record_result(results)
-            
 
         return self.result_store
 
     def found_optimal_model(self) -> bool:
-      log = self.logging_service.get_optimization_history()
+        log = self.logging_service.get_optimization_history()
 
-      if not isinstance(log, list) or len(log) < 2:
-          return False
+        if not isinstance(log, list) or len(log) < 2:
+            return False
 
-      quant_n = log[-1].get("quant")
-      quant_n_minus_1 = log[-2].get("quant")
+        # Records are dicts like {"model name": "llama-2-7b-chat.Q4_K_M.gguf"}
+        # (was incorrectly looking up "quant" key)
+        key = "model name"
+        model_n       = log[-1].get(key)
+        model_n_minus1 = log[-2].get(key)
 
-      # Back-to-back repeat
-      if quant_n == quant_n_minus_1:
-          return True
+        # Back-to-back repeat → converged
+        if model_n == model_n_minus1:
+            return True
 
-      # Repeat at n and n-2
-      if len(log) >= 3:
-          quant_n_minus_2 = log[-3].get("quant")
-          if quant_n == quant_n_minus_2:
-              return True
+        # Oscillating between two levels (n == n-2) → converged
+        if len(log) >= 3:
+            model_n_minus2 = log[-3].get(key)
+            if model_n == model_n_minus2:
+                return True
 
-      return False
-
-
+        return False
 
     def run_conversation(self, conversation: list[Turn], server_url: str) -> list[TurnResult]:
         """Run a multi-turn conversation, feeding the model's own output back as context each turn."""
@@ -129,7 +153,7 @@ class InferenceLoopService:
                     continue
 
                 if role == "gpt":
-                    # Skip gold assistant turns - we generate these ourselves
+                    # Skip gold assistant turns — we generate these ourselves
                     continue
 
                 # role == "human"
@@ -144,7 +168,11 @@ class InferenceLoopService:
             try:
                 response = requests.post(
                     f"{server_url}/v1/chat/completions",
-                    json={"messages": history},
+                    json={
+                        "messages":   history,
+                        "max_tokens": 512,
+                        "stop":       ["<|im_end|>", "<|eot_id|>", "</s>"],
+                    },
                     timeout=10000,
                 )
                 inference_output = response.json()["choices"][0]["message"]["content"]
@@ -162,20 +190,25 @@ class InferenceLoopService:
 
         # Prepend system prompt (from dataset) and append model name as metadata entries
         return (
-            [{"system_prompt": system_prompt}] +
-            results +
-            [{"model": self.model_name}]
+            [{"system_prompt": system_prompt}]
+            + results
+            + [{"model": self.model_name}]
         )
 
-    def load_model(self) -> None:
-        """Start the model container, restarting it only if a different model is running."""
+    def load_model(self, model_name: str | None = None) -> None:
+        """Start the model container, restarting it only if a different model is running.
+
+        Args:
+            model_name: GGUF filename to load.  Defaults to self.model_name when None.
+        """
+        target  = model_name if model_name is not None else self.model_name
         running = self.get_running_model()
 
         if running is not None:
             running_filename = os.path.basename(running)
 
-            if running_filename == self.model_name:
-                print(f"Model already running: {self.model_name}")
+            if running_filename == target:
+                print(f"Model already running: {target}")
                 return
 
             # A different model is loaded — stop it first
@@ -186,19 +219,23 @@ class InferenceLoopService:
                 check=True,
             )
 
+        # Ensure the target model is downloaded before starting the container
+        if target != self.model_name:
+            self.model_downloader.download(target)
+
         # Start the container with the target model via MODEL_FILE env var
-        print(f"Starting model: {self.model_name}")
-        env = {**os.environ, "MODEL_FILE": self.model_name}
+        print(f"Starting model: {target}")
+        env = {**os.environ, "MODEL_FILE": target}
         subprocess.run(
             ["docker-compose", "up", "-d", "--force-recreate", "model"],
             cwd=self.compose_dir,
             env=env,
             check=True,
         )
+        self._wait_for_model_ready()
 
     def get_running_model(self) -> str | None:
-        """
-        Query the llama.cpp server for the currently loaded model.
+        """Query the llama.cpp server for the currently loaded model.
 
         Returns:
             The model path string (e.g. "/models/foo.Q4_K_M.gguf"),
@@ -209,4 +246,4 @@ class InferenceLoopService:
             models: list[dict] = response.json()["data"]
             return models[0]["id"] if models else None
         except Exception:
-            return None  # container not running
+            return None   # container not running

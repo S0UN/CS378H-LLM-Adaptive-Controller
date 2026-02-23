@@ -1,8 +1,8 @@
 import asyncio
 from agents import Agent, Runner
 
-import agentTools
-import prompts
+from grader import agentTools
+from grader import prompts
 
 
 class GraderService:
@@ -10,21 +10,21 @@ class GraderService:
     def __init__(
         self,
         model: str = "gpt-4o",
-        tools: list | None = None,
         output_type=agentTools.QuantizationRecommendation,
     ) -> None:
-        if tools is None:
-            tools = [agentTools.record_attempt, agentTools.get_optimization_history]
-
         self.agent = Agent(
             name="Grader",
             instructions=prompts.build_quantization_instructions,
             model=model,
-            tools=tools,
             output_type=output_type,
         )
 
-    def run_agent(self, optimization_log=None, last_inference=None, model_names=None) -> dict[str, str] | dict:
+    def run(
+        self,
+        optimization_log: list | None = None,
+        last_inference: list | None = None,
+        model_names: list | None = None,
+    ) -> dict[str, str]:
         if optimization_log is None:
             optimization_log = []
         if last_inference is None:
@@ -32,14 +32,14 @@ class GraderService:
         if model_names is None:
             model_names = []
 
-        async def _run():
+        async def _run() -> dict[str, str]:
             result = await Runner.run(
                 self.agent,
                 "Analyze the information given and make your educated guess",
                 context={
                     "optimization_log": optimization_log,
                     "last_inference": last_inference,
-                    "model_names": model_names
+                    "model_names": model_names,
                 },
             )
             output = result.final_output

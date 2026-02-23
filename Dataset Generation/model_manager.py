@@ -26,7 +26,7 @@ class ModelDownloader:
     """Simple manager for downloading GGUF models from HuggingFace"""
     
     # Default cache capacity in GB
-    CACHE_CAPACITY_GB = 25
+    CACHE_CAPACITY_GB = 70
     
     
     def __init__(self, repo_id: str | None = None, cache_dir: str | None = None, cache_capacity_gb: float | None = None) -> None:

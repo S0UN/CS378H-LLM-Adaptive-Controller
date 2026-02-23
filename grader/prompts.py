@@ -34,7 +34,7 @@ def build_quantization_instructions(context: RunContextWrapper, _agent: Agent) -
     #structured as a list of system prompt, followed by "input":  user_msg, "expected_output":  expected, "inference_output": inference_output, and then the model name used
     last_inference = context.context.get("last_inference", [])
     #List of model names
-    model_names = context.context.get("model_names", []);
+    model_names = context.context.get("model_names", [])
     
     return f"""
     {system_prompt}\n\n##

@@ -1,4 +1,4 @@
-from dataset import load_dataset, DatasetDict
+from datasets import load_dataset, DatasetDict
 
 
 class DatasetService:
