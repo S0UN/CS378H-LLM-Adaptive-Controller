@@ -6,13 +6,13 @@ You are the **Llama Quantization Optimizer**, an expert in model compression and
 
 ## Objectives
 1. **Iterative Testing:** Test quantization levels starting from mid-range (e.g., Q4_K_M) and adjust based on performance.
-2. **Quality Evaluation:** Compare every local inference against the `GOLD_STANDARD`. Look for hallucinations, syntax errors, or loss of nuance.
+2. **Quality Evaluation:** Compare every local inference against the `GOLD_STANDARD` in the optimization log. Look for hallucinations, syntax errors, or loss of nuance.
 3. **Data Logging:** Always record your attempts using `record_attempt` to maintain a history of the optimization trend.
 4. **Efficiency Floor:** Stop once you find the smallest possible quantization that achieves a stable, high-quality score.
 
 ## Workflow Loop
-- **First Guess:** For your first educated guess for quantization level compare the first_iteration inference provied to the gold.
-- **Observe:** Review `get_optimization_history` to see previous results and avoid redundant tests.
+- **First Guess:** For your first educated guess for quantization level compare the first logged inference to its gold standard.
+- **Observe:** Review the optimization log to see previous results and avoid redundant tests.
 - **Hypothesize:** Based on the trend (e.g., "Q2 was gibberish, Q4 was 80% correct"), select the next logical quantization level.
 - **Action:** Run `run_local_llama` with your selected level.
 - **Analyze:** Score the result from 0.0 to 1.0. 
@@ -25,27 +25,31 @@ You are the **Llama Quantization Optimizer**, an expert in model compression and
 - Your final output must include a clear technical justification for why the selected level is the most stable.
 
 ## Reference Data
-GOLD_STANDARD: "{{your_gold_standard_text_here}}
+OPTIMIZATION_LOG: "{{list of attempts including gold and inference}}"
 """
 
 def build_quantization_instructions(context: RunContextWrapper, _agent: Agent) -> str:
     # Access variables from the context you pass at runtime
-    gold = context.context.get("gold_standard", "No gold standard provided.")
-    first_iteration = context.context.get("firstIteration", "First inference not provided.")
+    optimization_log = context.context.get("optimization_log", [])
+    #structured as a list of system prompt, followed by "input":  user_msg, "expected_output":  expected, "inference_output": inference_output, and then the model name used
+    last_inference = context.context.get("last_inference", [])
+    #List of model names
+    model_names = context.context.get("model_names", []);
     
     return f"""
     {system_prompt}\n\n##
 
     ## Task
-    Compare the current Llama model inference against the Gold Standard.
+    Use the optimization log to decide the next quantization level.
     
     ## Reference Data
-    - GOLD_STANDARD: "{gold}"
-    - FIRST_ITERATION_SAMPLE: "{first_iteration}"
+    - OPTIMIZATION_LOG: "{optimization_log}"
+    - LAST_INFERENCE_RESULT: "{last_inference}"
+    - NAMES OF MODELS AVAILABLE: "{model_names}"
     ## Instructions
-    1. Analyze the firstIteration provided to kick off your loop.
-    2. Compare it to the GOLD_STANDARD above.
-    3. Use 'record_attempt' to log the score and your reasoning.
+    1. Analyze the most recent entry in the optimization log.
+    2. Compare its inference to the gold standard included in that log entry.
+    3. Use 'record_attempt' to log the score and your reasoning for the next step.
     4. If the result is stable, provide the final OptimizedQuantization object.
-    5. If the result is not stable then continue to the infrence tool with your quantization best guess and continue your loop.
+    5. If the result is not stable then continue with your quantization best guess and continue your loop.
     """

@@ -1,12 +1,15 @@
-from pydantic import BaseModel, Field
-from agents import function_tool, RunContextWrapper
-
-
+from pydantic import BaseModel, Field, ConfigDict
 
 class QuantizationRecommendation(BaseModel):
-    """Final recommendation for the best quantization level"""
+    """Final recommendation for the next best-fit model name."""
+    """The alias feild should always remain the litteral string "model name" its functionality is strictly for readability"""
 
-    best_quantization: str = Field(description="Just the name of the quantization level, no other text, for example: 'q4_0'")
+    model_config = ConfigDict(populate_by_name=True)
+
+    model_name: str = Field(
+        alias="model name",
+        description="Just the model name string, no other text.",
+    )
 
 
     

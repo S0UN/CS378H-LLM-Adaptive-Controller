@@ -1,10 +1,12 @@
 import subprocess
 import os
 import requests
-from datasets import DatasetDict
+from dataset import DatasetDict
 from dataset import DatasetService
 from model_manager import ModelDownloader
 from logging_service import LoggingService
+from results_logging_service import ResultsLoggingService
+from grader.agent import GraderService
 # Type aliases for clarity
 Turn      = dict[str, str]           # {"input": ..., "output": ...} or {"from": ..., "value": ...}
 TurnResult = dict[str, str | None]   # {"input": ..., "expected_output": ..., "inference_output": ...}
@@ -18,6 +20,7 @@ class InferenceLoopService:
     compose_dir:      str
     logging_service: LoggingService
     result_store : ResultsLoggingService
+    grader : GraderService
 
     def __init__(
         self,
@@ -39,6 +42,8 @@ class InferenceLoopService:
         self.compose_dir      = compose_dir
         self.logging_service = LoggingService()
         self.result_store = ResultsLoggingService()
+        self.grader = GraderService()
+        self.model_list = []
         
         # Download the model if not already cached
         self.model_downloader.download(model_name)
@@ -54,13 +59,21 @@ class InferenceLoopService:
         for row in self.dataset[split]:
             conversation: list[Turn] = row.get("conversation", row.get("conversations", []))
             results = self.run_conversation(conversation, server_url)
-            record: Dict[str, Union[str, float]] = #openAI call
-            self.logging_service.record_attempt(suggested_model)
+            record = self.grader.run(
+                optimization_log=self.logging_service.get_optimization_history(),
+                last_inference=results,
+            )
+            self.logging_service.record_attempt(record)
 
-            while not found_optimal_model():
-                self.load_model(suggested_model)
+            while not self.found_optimal_model():
+                recent: str = self.logging_service.get_most_recent_suggestion()
+                self.load_model(recent)
                 results = self.run_conversation(conversation,server_url)
-                record: Dict[str, Union[str, float]] = #openAI call
+                record = self.grader.run(
+                    optimization_log=self.logging_service.get_optimization_history(),
+                    last_inference=results,
+                    model_list=self.model_list
+                )
                 self.logging_service.record_attempt(record)
             
             self.logging_service.clear()
