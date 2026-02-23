@@ -96,7 +96,8 @@ class InferenceLoopService:
     def run_conversation(self, conversation: list[Turn], server_url: str) -> list[TurnResult]:
         """Run a multi-turn conversation, feeding the model's own output back as context each turn."""
         results: list[TurnResult] = []
-        history: list[Message]    = []  
+        history: list[Message]    = []
+        system_prompt: str        = ""
 
         for turn in conversation:
             # Normalize turn format
@@ -109,8 +110,9 @@ class InferenceLoopService:
                 role = turn.get("from")
 
                 if role == "system":
-                    # Inject system prompt at the start of history, then move to next turn
-                    history.append({"role": "system", "content": turn["value"]})
+                    # Capture system prompt from dataset and inject into history
+                    system_prompt = turn["value"]
+                    history.append({"role": "system", "content": system_prompt})
                     continue
 
                 if role == "gpt":
@@ -136,7 +138,6 @@ class InferenceLoopService:
             except Exception as e:
                 print(f"Inference error on turn '{user_msg[:60]}...': {e}")
 
-            #at the top of results, remember to put the system promopt and at the bottom of result, put the inference model that outputte this. 
             results.append({
                 "input":            user_msg,
                 "expected_output":  expected,
@@ -146,7 +147,12 @@ class InferenceLoopService:
             # Option A: feed the model's own reply back as context for the next turn
             history.append({"role": "assistant", "content": inference_output or ""})
 
-        return results
+        # Prepend system prompt (from dataset) and append model name as metadata entries
+        return (
+            [{"system_prompt": system_prompt}] +
+            results +
+            [{"model": self.model_name}]
+        )
 
     def load_model(self) -> None:
         """Start the model container, restarting it only if a different model is running."""
