@@ -10,7 +10,6 @@ Turn      = dict[str, str]           # {"input": ..., "output": ...} or {"from":
 TurnResult = dict[str, str | None]   # {"input": ..., "expected_output": ..., "inference_output": ...}
 Message   = dict[str, str]           # {"role": ..., "content": ...}
 
-
 class InferenceLoopService:
 
     dataset:          DatasetDict
@@ -18,6 +17,7 @@ class InferenceLoopService:
     model_downloader: ModelDownloader
     compose_dir:      str
     logging_service: LoggingService
+    result_store : ResultsLoggingService
 
     def __init__(
         self,
@@ -38,16 +38,16 @@ class InferenceLoopService:
         self.model_downloader = model_downloader
         self.compose_dir      = compose_dir
         self.logging_service = LoggingService()
-
+        self.result_store = ResultsLoggingService()
+        
         # Download the model if not already cached
         self.model_downloader.download(model_name)
 
-    def run(self) -> list[list[TurnResult]]:
+    def run(self) -> ResultsLoggingService:
         """Load the model into Docker then run the full inference loop over the dataset."""
         self.load_model()
 
         server_url  = os.environ.get("MODEL_BASE_URL", "http://localhost:8080")
-        all_results: list[list[TurnResult]] = []
 
         split = "train" if "train" in self.dataset else list(self.dataset.keys())[0]
 
@@ -65,10 +65,10 @@ class InferenceLoopService:
             
             self.logging_service.clear()
 
-            all_results.append(results)
+            self.result_store.record_result(results)
             
 
-        return all_results
+        return self.result_store
 
     def found_optimal_model(self) -> bool:
       log = self.logging_service.get_optimization_history()
