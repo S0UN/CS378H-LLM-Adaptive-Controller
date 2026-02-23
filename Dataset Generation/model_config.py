@@ -29,9 +29,14 @@ QUANT: dict[str, str] = {
     "HIGH": "Q5_K_M",
 }
 
+# Resolve the project root (one level up from this file's "Dataset Generation/" folder)
+# so the cache always lands in <project_root>/models/ regardless of where the script is run from.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DEFAULT_MODELS_DIR = os.path.join(_PROJECT_ROOT, "models")
+
 DEFAULT_MODEL = os.getenv("MODEL_REPO", MODEL_REPOS["LLAMA2_7B"])
 DEFAULT_QUANT = os.getenv("MODEL_QUANT", QUANT["RECOMMENDED"])
-DEFAULT_CACHE_DIR = os.getenv("MODEL_CACHE_DIR", "../models")
+DEFAULT_CACHE_DIR = os.getenv("MODEL_CACHE_DIR", _DEFAULT_MODELS_DIR)
 
 # HELPER FUNCTIONS
 def get_model_repo(model_name: str) -> str:

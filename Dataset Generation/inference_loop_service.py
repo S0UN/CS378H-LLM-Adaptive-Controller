@@ -76,34 +76,55 @@ class InferenceLoopService:
         server_url = os.environ.get("MODEL_BASE_URL", "http://localhost:8080")
 
         split = "train" if "train" in self.dataset else list(self.dataset.keys())[0]
+        total_rows = len(self.dataset[split])
+        print(f"\n{'='*60}")
+        print(f"Starting inference loop: {total_rows} rows, split='{split}'")
+        print(f"{'='*60}\n")
 
-        for row in self.dataset[split]:
+        for row_idx, row in enumerate(self.dataset[split], start=1):
             conversation: list[Turn] = row.get("conversation", row.get("conversations", []))
+            num_turns = len(conversation)
+            print(f"\n[Row {row_idx}/{total_rows}] Starting — {num_turns} turns in conversation")
 
             # ── First inference pass with the starting model ──────────────────
+            print(f"[Row {row_idx}] Running first inference pass with model: {self.model_name}")
             results = self.run_conversation(conversation, server_url)
+            print(f"[Row {row_idx}] Inference done. Calling grader...")
             record  = self.grader.run(
                 optimization_log=self.logging_service.get_optimization_history(),
                 last_inference=results,
                 model_names=self.model_list,   # was incorrectly "model_list="
             )
+            suggested = record.get("model name", "unknown")
+            print(f"[Row {row_idx}] Grader suggested: {suggested}")
             self.logging_service.record_attempt(record)
 
             # ── Optimization loop ─────────────────────────────────────────────
+            opt_iter = 0
             while not self.found_optimal_model():
+                opt_iter += 1
                 recent: str = self.logging_service.get_most_recent_suggestion()
-                self.load_model(recent)        # now accepts an optional model_name arg
+                print(f"[Row {row_idx}] Opt iter {opt_iter}: switching to model '{recent}'")
+                self.load_model(recent)
+                print(f"[Row {row_idx}] Opt iter {opt_iter}: running inference with model: {self.model_name}")
                 results = self.run_conversation(conversation, server_url)
+                print(f"[Row {row_idx}] Opt iter {opt_iter}: calling grader...")
                 record  = self.grader.run(
                     optimization_log=self.logging_service.get_optimization_history(),
                     last_inference=results,
                     model_names=self.model_list,
                 )
+                suggested = record.get("model name", "unknown")
+                print(f"[Row {row_idx}] Opt iter {opt_iter}: grader suggested: {suggested}")
                 self.logging_service.record_attempt(record)
 
+            print(f"[Row {row_idx}] Converged after {opt_iter} optimization iterations. Final model: {self.model_name}")
             self.logging_service.clear()
             self.result_store.record_result(results)
 
+        print(f"\n{'='*60}")
+        print(f"Inference loop complete. {total_rows} rows processed.")
+        print(f"{'='*60}\n")
         return self.result_store
 
     def found_optimal_model(self) -> bool:
@@ -135,6 +156,7 @@ class InferenceLoopService:
         results: list[TurnResult] = []
         history: list[Message]    = []
         system_prompt: str        = ""
+        turn_num = 0
 
         for turn in conversation:
             # Normalize turn format
@@ -162,6 +184,8 @@ class InferenceLoopService:
 
             # Append the user message to the running history
             history.append({"role": "user", "content": user_msg})
+            turn_num += 1
+            print(f"  Turn {turn_num}: sending '{user_msg[:60]}{'...' if len(user_msg) > 60 else ''}'")
 
             # Send the full history to the model
             inference_output: str | None = None
@@ -176,8 +200,9 @@ class InferenceLoopService:
                     timeout=10000,
                 )
                 inference_output = response.json()["choices"][0]["message"]["content"]
+                print(f"  Turn {turn_num}: got response ({len(inference_output)} chars)")
             except Exception as e:
-                print(f"Inference error on turn '{user_msg[:60]}...': {e}")
+                print(f"  Turn {turn_num}: inference error — {e}")
 
             results.append({
                 "input":            user_msg,
@@ -202,6 +227,7 @@ class InferenceLoopService:
             model_name: GGUF filename to load.  Defaults to self.model_name when None.
         """
         target  = model_name if model_name is not None else self.model_name
+        self.model_name = target
         running = self.get_running_model()
 
         if running is not None:

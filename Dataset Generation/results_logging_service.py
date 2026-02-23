@@ -17,6 +17,9 @@ class ResultsLoggingService:
     def record_result(self, result: dict) -> None:
         self.result_store.append(result)
         self.row_number += 1
+        # Print the model that produced this result for real-time visibility
+        model_entry = next((e.get("model") for e in result if isinstance(e, dict) and "model" in e), "unknown")
+        print(f"[Row {self.row_number}] Saved result. True model: {model_entry}")
         self.flush_latest()
 
     def flush_latest(self) -> None:
