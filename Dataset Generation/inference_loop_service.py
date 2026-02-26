@@ -8,6 +8,7 @@ from model_manager import ModelDownloader
 from logging_service import LoggingService
 from results_logging_service import ResultsLoggingService
 from grader.agent import GraderService
+import logging
 
 # Type aliases for clarity
 Turn       = dict[str, str]           # {"input": ..., "output": ...} or {"from": ..., "value": ...}

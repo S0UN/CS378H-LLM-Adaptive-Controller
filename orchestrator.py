@@ -13,6 +13,7 @@ Environment variables (can also be set in a .env file):
 """
 import os
 import sys
+import logging
 
 from dotenv import load_dotenv
 
@@ -26,6 +27,10 @@ sys.path.insert(0, os.path.join(_project_root, "Dataset Generation"))     # for 
 from model_config import DEFAULT_MODEL, DEFAULT_QUANT, DEFAULT_CACHE_DIR  # noqa: E402
 from model_manager import ModelDownloader                                  # noqa: E402
 from inference_loop_service import InferenceLoopService                    # noqa: E402
+
+#for tracing
+log_level = os.getenv("DEBUG_MODE", "INFO").upper()
+logging.basicConfig(level=log_level)
 
 
 def main() -> None:
