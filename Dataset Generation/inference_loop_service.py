@@ -2,13 +2,15 @@ import subprocess
 import os
 import time
 import requests
+import logging
 from datasets import DatasetDict          # HuggingFace datasets library (was wrongly "from dataset import DatasetDict")
 from dataset import DatasetService
 from model_manager import ModelDownloader
 from logging_service import LoggingService
 from results_logging_service import ResultsLoggingService
 from grader.agent import GraderService
-import logging
+
+logger = logging.getLogger(__name__)
 
 # Type aliases for clarity
 Turn       = dict[str, str]           # {"input": ..., "output": ...} or {"from": ..., "value": ...}
@@ -51,7 +53,8 @@ class InferenceLoopService:
 
         # Populate the list of available model filenames from the HuggingFace repo
         # so the grader can reference them when recommending the next quantization.
-        self.model_list = self.model_downloader.list_available()
+        self.model_list = set(self.model_downloader.list_available())
+
 
         # Download the starting model if not already cached
         self.model_downloader.download(model_name)
@@ -78,54 +81,70 @@ class InferenceLoopService:
 
         split = "train" if "train" in self.dataset else list(self.dataset.keys())[0]
         total_rows = len(self.dataset[split])
-        print(f"\n{'='*60}")
-        print(f"Starting inference loop: {total_rows} rows, split='{split}'")
-        print(f"{'='*60}\n")
+        logger.debug("%s", "=" * 60)
+        logger.debug("Starting inference loop: %s rows, split='%s'", total_rows, split)
+        logger.debug("%s", "=" * 60)
 
         for row_idx, row in enumerate(self.dataset[split], start=1):
             conversation: list[Turn] = row.get("conversation", row.get("conversations", []))
             num_turns = len(conversation)
-            print(f"\n[Row {row_idx}/{total_rows}] Starting — {num_turns} turns in conversation")
+            logger.debug("[Row %s/%s] Starting - %s turns in conversation", row_idx, total_rows, num_turns)
 
             # ── First inference pass with the starting model ──────────────────
-            print(f"[Row {row_idx}] Running first inference pass with model: {self.model_name}")
+            logger.debug("[Row %s] Running first inference pass with model: %s", row_idx, self.model_name)
             results = self.run_conversation(conversation, server_url)
-            print(f"[Row {row_idx}] Inference done. Calling grader...")
+            logger.debug("[Row %s] Inference done. Calling grader...", row_idx)
             record  = self.grader.run(
                 optimization_log=self.logging_service.get_optimization_history(),
                 last_inference=results,
-                model_names=self.model_list,   # was incorrectly "model_list="
+                model_names=self.model_list
             )
             suggested = record.get("model name", "unknown")
-            print(f"[Row {row_idx}] Grader suggested: {suggested}")
+            logger.debug("[Row %s] Grader suggested: %s", row_idx, suggested)
             self.logging_service.record_attempt(record)
 
             # ── Optimization loop ─────────────────────────────────────────────
             opt_iter = 0
+            retry_count : int = 0
             while not self.found_optimal_model():
+                if (retry_count > 3):
+                    raise Exception("Failed to find optimal model after 3 retries")
+
                 opt_iter += 1
                 recent: str = self.logging_service.get_most_recent_suggestion()
-                print(f"[Row {row_idx}] Opt iter {opt_iter}: switching to model '{recent}'")
+                logger.debug("[Row %s] Opt iter %s: switching to model '%s'", row_idx, opt_iter, recent)
                 self.load_model(recent)
-                print(f"[Row {row_idx}] Opt iter {opt_iter}: running inference with model: {self.model_name}")
                 results = self.run_conversation(conversation, server_url)
-                print(f"[Row {row_idx}] Opt iter {opt_iter}: calling grader...")
+                logger.debug("[Row %s] Opt iter %s: calling grader...", row_idx, opt_iter)
                 record  = self.grader.run(
                     optimization_log=self.logging_service.get_optimization_history(),
                     last_inference=results,
                     model_names=self.model_list,
                 )
+
+                # Check if the suggested model is valid
+                suggested = record.get("model name", "")
+                is_valid =  suggested in self.model_list
+                if (not is_valid):
+                    retry_count += 1
+                    continue # skip to next iteration
+
                 suggested = record.get("model name", "unknown")
-                print(f"[Row {row_idx}] Opt iter {opt_iter}: grader suggested: {suggested}")
+                logger.debug("[Row %s] Opt iter %s: grader suggested: %s", row_idx, opt_iter, suggested)
                 self.logging_service.record_attempt(record)
 
-            print(f"[Row {row_idx}] Converged after {opt_iter} optimization iterations. Final model: {self.model_name}")
+            logger.debug(
+                "[Row %s] Converged after %s optimization iterations. Final model: %s",
+                row_idx,
+                opt_iter,
+                self.model_name,
+            )
             self.logging_service.clear()
             self.result_store.record_result(results)
 
-        print(f"\n{'='*60}")
-        print(f"Inference loop complete. {total_rows} rows processed.")
-        print(f"{'='*60}\n")
+        logger.debug("%s", "=" * 60)
+        logger.debug("Inference loop complete. %s rows processed.", total_rows)
+        logger.debug("%s", "=" * 60)
         return self.result_store
 
     def found_optimal_model(self) -> bool:
