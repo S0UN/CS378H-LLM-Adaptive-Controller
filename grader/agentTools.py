@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
+from agents import function_tool
 import logging
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class QuantizationRecommendation(BaseModel):
     )
 
 
+@function_tool
 def outputThinking(reasoning: str) -> None:
     """Log OpenAI LLM reasoning when debug logging is enabled."""
     logger.debug("OpenAI LLM reasoning: %s", reasoning)
