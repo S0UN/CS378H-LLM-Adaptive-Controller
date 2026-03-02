@@ -9,6 +9,7 @@ from model_manager import ModelDownloader
 from logging_service import LoggingService
 from results_logging_service import ResultsLoggingService
 from grader.agent import GraderService
+from shared_types import GenerationConfig, RecommendationRecord
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ class InferenceLoopService:
     result_store:     ResultsLoggingService
     grader:           GraderService
     model_list:       list[str]
+    quality_score_threshold: int
 
     def __init__(
         self,
@@ -50,6 +52,7 @@ class InferenceLoopService:
         self.logging_service  = LoggingService()
         self.result_store     = ResultsLoggingService()
         self.grader           = GraderService()
+        self.quality_score_threshold = max(1, min(100, int(os.getenv("QUALITY_SCORE_THRESHOLD", "80"))))
 
         # Populate the list of available model filenames from the HuggingFace repo
         # so the grader can reference them when recommending the next quantization.
@@ -72,49 +75,119 @@ class InferenceLoopService:
             f"Model server did not become ready within {timeout} seconds."
         )
 
+    @staticmethod
+    def _debug_recommendation(
+        row_idx: int,
+        suggested: str,
+        config: GenerationConfig,
+        quality_score: int,
+        opt_iter: int | None = None,
+    ) -> None:
+        if opt_iter is None:
+            logger.debug(
+                "[Row %s] Grader suggested model=%s params(max_tokens=%s, temperature=%.3f, top_p=%.3f, top_k=%s, repeat_penalty=%.3f) quality_score=%s",
+                row_idx,
+                suggested,
+                config["max_tokens"],
+                config["temperature"],
+                config["top_p"],
+                config["top_k"],
+                config["repeat_penalty"],
+                quality_score,
+            )
+            return
+        logger.debug(
+            "[Row %s] Opt iter %s: grader suggested model=%s params(max_tokens=%s, temperature=%.3f, top_p=%.3f, top_k=%s, repeat_penalty=%.3f) quality_score=%s",
+            row_idx,
+            opt_iter,
+            suggested,
+            config["max_tokens"],
+            config["temperature"],
+            config["top_p"],
+            config["top_k"],
+            config["repeat_penalty"],
+            quality_score,
+        )
+
     def run(self) -> ResultsLoggingService:
         """Load the model into Docker then run the full inference loop over the dataset."""
         self.load_model()
         self._wait_for_model_ready()
 
         server_url = os.environ.get("MODEL_BASE_URL", "http://localhost:8080")
+        gen_config: GenerationConfig = {
+            "max_tokens": 512,
+            "temperature": 0.2,
+            "top_p": 0.95,
+            "top_k": 40,
+            "repeat_penalty": 1.1,
+        }
 
         split = "train" if "train" in self.dataset else list(self.dataset.keys())[0]
         total_rows = len(self.dataset[split])
-        logger.debug("%s", "=" * 60)
-        logger.debug("Starting inference loop: %s rows, split='%s'", total_rows, split)
-        logger.debug("%s", "=" * 60)
+        logger.info("%s", "=" * 60)
+        logger.info("Starting inference loop: %s rows, split='%s'", total_rows, split)
+        logger.info("%s", "=" * 60)
 
         for row_idx, row in enumerate(self.dataset[split], start=1):
             conversation: list[Turn] = row.get("conversation", row.get("conversations", []))
             num_turns = len(conversation)
-            logger.debug("[Row %s/%s] Starting - %s turns in conversation", row_idx, total_rows, num_turns)
+            logger.info("[Row %s/%s] Starting - %s turns in conversation", row_idx, total_rows, num_turns)
 
             # ── First inference pass with the starting model ──────────────────
-            logger.debug("[Row %s] Running first inference pass with model: %s", row_idx, self.model_name)
-            results = self.run_conversation(conversation, server_url)
-            logger.debug("[Row %s] Inference done. Calling grader...", row_idx)
+            logger.info("[Row %s] Running first inference pass with model: %s", row_idx, self.model_name)
+            initial_config: RecommendationRecord = {
+                "model name": self.model_name,
+                "max tokens": int(gen_config["max_tokens"]),
+                "temperature": float(gen_config["temperature"]),
+                "top p": float(gen_config["top_p"]),
+                "top k": int(gen_config["top_k"]),
+                "repeat penalty": float(gen_config["repeat_penalty"]),
+            }
+            results = self.run_conversation(
+                conversation,
+                server_url,
+                max_tokens=int(gen_config["max_tokens"]),
+                temperature=float(gen_config["temperature"]),
+                top_p=float(gen_config["top_p"]),
+                top_k=int(gen_config["top_k"]),
+                repeat_penalty=float(gen_config["repeat_penalty"]),
+            )
+            logger.info("[Row %s] Inference done. Calling grader...", row_idx)
             record  = self.grader.run(
                 optimization_log=self.logging_service.get_optimization_history(),
                 last_inference=results,
                 model_names=self.model_list
             )
-            suggested = record.get("model name", "unknown")
-            logger.debug("[Row %s] Grader suggested: %s", row_idx, suggested)
+
+            suggested = str(record["model name"])
+            gen_config = {
+                "max_tokens": int(record["max tokens"]),
+                "temperature": float(record["temperature"]),
+                "top_p": float(record["top p"]),
+                "top_k": int(record["top k"]),
+                "repeat_penalty": float(record["repeat penalty"]),
+            }
+            quality_score = int(record["quality score"])
+            self._debug_recommendation(row_idx, suggested, gen_config, quality_score)
             self.logging_service.record_attempt(record)
 
             # ── Optimization loop ─────────────────────────────────────────────
             opt_iter = 0
-            retry_count : int = 0
             while not self.found_optimal_model():
-                if (retry_count > 3):
-                    raise Exception("Failed to find optimal model after 3 retries")
-
                 opt_iter += 1
                 recent: str = self.logging_service.get_most_recent_suggestion()
                 logger.debug("[Row %s] Opt iter %s: switching to model '%s'", row_idx, opt_iter, recent)
                 self.load_model(recent)
-                results = self.run_conversation(conversation, server_url)
+                results = self.run_conversation(
+                    conversation,
+                    server_url,
+                    max_tokens=int(gen_config["max_tokens"]),
+                    temperature=float(gen_config["temperature"]),
+                    top_p=float(gen_config["top_p"]),
+                    top_k=int(gen_config["top_k"]),
+                    repeat_penalty=float(gen_config["repeat_penalty"]),
+                )
                 logger.debug("[Row %s] Opt iter %s: calling grader...", row_idx, opt_iter)
                 record  = self.grader.run(
                     optimization_log=self.logging_service.get_optimization_history(),
@@ -122,15 +195,16 @@ class InferenceLoopService:
                     model_names=self.model_list,
                 )
 
-                # Check if the suggested model is valid
-                suggested = record.get("model name", "")
-                is_valid =  suggested in self.model_list
-                if (not is_valid):
-                    retry_count += 1
-                    continue # skip to next iteration
-
-                suggested = record.get("model name", "unknown")
-                logger.debug("[Row %s] Opt iter %s: grader suggested: %s", row_idx, opt_iter, suggested)
+                suggested = str(record["model name"])
+                gen_config = {
+                    "max_tokens": int(record["max tokens"]),
+                    "temperature": float(record["temperature"]),
+                    "top_p": float(record["top p"]),
+                    "top_k": int(record["top k"]),
+                    "repeat_penalty": float(record["repeat penalty"]),
+                }
+                quality_score = int(record["quality score"])
+                self._debug_recommendation(row_idx, suggested, gen_config, quality_score, opt_iter=opt_iter)
                 self.logging_service.record_attempt(record)
 
             logger.debug(
@@ -139,8 +213,9 @@ class InferenceLoopService:
                 opt_iter,
                 self.model_name,
             )
+            final_recommendation = self._get_effective_config_for_latest_score(initial_config)
+            self.result_store.record_result(results, recommendation=final_recommendation)
             self.logging_service.clear()
-            self.result_store.record_result(results)
 
         logger.debug("%s", "=" * 60)
         logger.debug("Inference loop complete. %s rows processed.", total_rows)
@@ -150,28 +225,47 @@ class InferenceLoopService:
     def found_optimal_model(self) -> bool:
         log = self.logging_service.get_optimization_history()
 
-        if not isinstance(log, list) or len(log) < 2:
+        if not isinstance(log, list) or len(log) < 1:
             return False
 
-        # Records are dicts like {"model name": "llama-2-7b-chat.Q4_K_M.gguf"}
-        # (was incorrectly looking up "quant" key)
-        key = "model name"
-        model_n       = log[-1].get(key)
-        model_n_minus1 = log[-2].get(key)
+        latest = log[-1]
+        try:
+            quality_score = int(latest.get("quality score", 0))
+        except (TypeError, ValueError):
+            quality_score = 0
+        return quality_score >= self.quality_score_threshold
 
-        # Back-to-back repeat → converged
-        if model_n == model_n_minus1:
-            return True
+    def _get_effective_config_for_latest_score(
+        self,
+        initial_config: RecommendationRecord,
+    ) -> RecommendationRecord:
+        """Return the config that produced the latest scored inference.
 
-        # Oscillating between two levels (n == n-2) → converged
-        if len(log) >= 3:
-            model_n_minus2 = log[-3].get(key)
-            if model_n == model_n_minus2:
-                return True
+        The latest log entry is the *next* recommendation; its score evaluates
+        the inference generated by the previous configuration.
+        """
+        log = self.logging_service.get_optimization_history()
+        if not log:
+            return dict(initial_config)
 
-        return False
+        latest_quality = int(log[-1].get("quality score", 0))
+        if len(log) == 1:
+            result = dict(initial_config)
+            result["quality score"] = latest_quality
+            return result
 
-    def run_conversation(self, conversation: list[Turn], server_url: str) -> list[TurnResult]:
+        previous = log[-2]
+        return {
+            "model name": str(previous["model name"]),
+            "max tokens": int(previous["max tokens"]),
+            "temperature": float(previous["temperature"]),
+            "top p": float(previous["top p"]),
+            "top k": int(previous["top k"]),
+            "repeat penalty": float(previous["repeat penalty"]),
+            "quality score": latest_quality,
+        }
+
+    def run_conversation(self, conversation: list[Turn], server_url: str, max_tokens: int=512, temperature: float=0.2, top_p: float=0.95, top_k: int=40, repeat_penalty: float=1.1) -> list[TurnResult]:
         """Run a multi-turn conversation, feeding the model's own output back as context each turn."""
         results: list[TurnResult] = []
         history: list[Message]    = []
@@ -214,7 +308,11 @@ class InferenceLoopService:
                     f"{server_url}/v1/chat/completions",
                     json={
                         "messages":   history,
-                        "max_tokens": 512,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                        "top_p": top_p,
+                        "top_k": top_k,
+                        "repeat_penalty": repeat_penalty,
                         "stop":       ["<|im_end|>", "<|eot_id|>", "</s>"],
                     },
                     timeout=10000,

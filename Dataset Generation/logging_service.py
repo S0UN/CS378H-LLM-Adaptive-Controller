@@ -1,15 +1,14 @@
-
-from typing import Dict, List, Union
+from shared_types import RecommendationRecord
 
 class LoggingService:
-    optimization_log: List[Dict[str, Union[str, float]]]
+    optimization_log: list[RecommendationRecord]
 
     def __init__(self):
         self.optimization_log = []
 
-    def record_attempt(self, record: Dict[str, Union[str, float]]):
+    def record_attempt(self, record: RecommendationRecord):
         """
-        Stores the result of a quantization test in the log.
+        Stores the result of test in the log.
         """
 
         self.optimization_log.append(record)
@@ -18,19 +17,24 @@ class LoggingService:
             f"History now contains {len(self.optimization_log)} entries."
         )
 
-    def get_optimization_history(self) ->  List[Dict[str, Union[str, float]]]:
+    def get_optimization_history(self) -> list[RecommendationRecord]:
         """
-        Returns the full list of all previous quantization attempts and their results.
+        Returns the full list of all previous attempts and their results.
         """
         if not self.optimization_log:
             return []
         return self.optimization_log
 
+    def get_most_recent_recommendation(self) -> RecommendationRecord | None:
+        if not self.optimization_log:
+            return None
+        return self.optimization_log[-1]
+
     def get_most_recent_suggestion(self) -> str:
         #gets just the string (name) of the most recent entry in the optimization log
-        if not self.optimization_log:
+        most_recent = self.get_most_recent_recommendation()
+        if most_recent is None:
             return ""
-        most_recent = self.optimization_log[-1]
         return str(most_recent.get("model name", ""))
         
 

@@ -3,15 +3,46 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class QuantizationRecommendation(BaseModel):
-    """Final recommendation for the next best-fit model name."""
-    """The alias feild should always remain the litteral string "model name" its functionality is strictly for readability"""
+    """Recommended model configuration plus a quality score for the latest inference."""
 
     model_config = ConfigDict(populate_by_name=True)
 
     model_name: str = Field(
         alias="model name",
-        description="Just the model name string, no other text.",
+        description="Recommended model filename.",
+    )
+    max_tokens: int = Field(
+        alias="max tokens",
+        ge=1,
+        description="Recommended max output tokens.",
+    )
+    temperature: float = Field(
+        ge=0.0,
+        description="Recommended temperature.",
+    )
+    top_p: float = Field(
+        alias="top p",
+        ge=0.0,
+        le=1.0,
+        description="Recommended nucleus sampling top_p.",
+    )
+    top_k: int = Field(
+        alias="top k",
+        ge=0,
+        description="Recommended top_k value.",
+    )
+    repeat_penalty: float = Field(
+        alias="repeat penalty",
+        ge=0.0,
+        description="Recommended repetition penalty.",
+    )
+    quality_score: int = Field(
+        alias="quality score",
+        ge=1,
+        le=100,
+        description="Quality score from 1 to 100 for the latest inference.",
     )
 
 
