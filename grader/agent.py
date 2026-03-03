@@ -160,14 +160,14 @@ class GraderService:
             last_raw_record = asyncio.run(_run())
             if self._is_valid_raw_record(last_raw_record, model_names):
                 return self._normalize_record(last_raw_record, optimization_log, model_names)
-            logger.debug(
+            logger.info(
                 "Grader returned invalid recommendation on attempt %s/%s: %s",
                 attempt + 1,
                 self.max_validation_retries + 1,
                 last_raw_record,
             )
 
-        logger.debug("Using normalized fallback after grader validation retries were exhausted.")
+        logger.info("Using normalized fallback after grader validation retries were exhausted.")
         if not isinstance(last_raw_record, dict):
             last_raw_record = {}
         return self._normalize_record(last_raw_record, optimization_log, model_names)

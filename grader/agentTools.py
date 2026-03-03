@@ -49,5 +49,5 @@ class QuantizationRecommendation(BaseModel):
 
 @function_tool
 def outputThinking(reasoning: str) -> None:
-    """Log OpenAI LLM reasoning when debug logging is enabled."""
-    logger.debug("OpenAI LLM reasoning: %s", reasoning)
+    """Log OpenAI LLM reasoning along with the set of choices you made in the same order as the last inference you were passed in"""
+    logger.info("OpenAI LLM reasoning: %s", reasoning)

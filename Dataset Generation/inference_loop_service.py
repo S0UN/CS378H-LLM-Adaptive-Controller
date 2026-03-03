@@ -30,6 +30,7 @@ class InferenceLoopService:
     grader:           GraderService
     model_list:       list[str]
     quality_score_threshold: int
+    stub_inference: bool
 
     def __init__(
         self,
@@ -53,6 +54,7 @@ class InferenceLoopService:
         self.result_store     = ResultsLoggingService()
         self.grader           = GraderService()
         self.quality_score_threshold = max(1, min(100, int(os.getenv("QUALITY_SCORE_THRESHOLD", "80"))))
+        self.stub_inference = os.getenv("STUB_INFERENCE", "0").lower() in {"1", "true", "yes"}
 
         # Populate the list of available model filenames from the HuggingFace repo
         # so the grader can reference them when recommending the next quantization.
@@ -75,44 +77,13 @@ class InferenceLoopService:
             f"Model server did not become ready within {timeout} seconds."
         )
 
-    @staticmethod
-    def _debug_recommendation(
-        row_idx: int,
-        suggested: str,
-        config: GenerationConfig,
-        quality_score: int,
-        opt_iter: int | None = None,
-    ) -> None:
-        if opt_iter is None:
-            logger.debug(
-                "[Row %s] Grader suggested model=%s params(max_tokens=%s, temperature=%.3f, top_p=%.3f, top_k=%s, repeat_penalty=%.3f) quality_score=%s",
-                row_idx,
-                suggested,
-                config["max_tokens"],
-                config["temperature"],
-                config["top_p"],
-                config["top_k"],
-                config["repeat_penalty"],
-                quality_score,
-            )
-            return
-        logger.debug(
-            "[Row %s] Opt iter %s: grader suggested model=%s params(max_tokens=%s, temperature=%.3f, top_p=%.3f, top_k=%s, repeat_penalty=%.3f) quality_score=%s",
-            row_idx,
-            opt_iter,
-            suggested,
-            config["max_tokens"],
-            config["temperature"],
-            config["top_p"],
-            config["top_k"],
-            config["repeat_penalty"],
-            quality_score,
-        )
-
     def run(self) -> ResultsLoggingService:
         """Load the model into Docker then run the full inference loop over the dataset."""
-        self.load_model()
-        self._wait_for_model_ready()
+        if self.stub_inference:
+            logger.info("STUB_INFERENCE enabled: skipping model container startup and network inference.")
+        else:
+            self.load_model()
+            self._wait_for_model_ready()
 
         server_url = os.environ.get("MODEL_BASE_URL", "http://localhost:8080")
         gen_config: GenerationConfig = {
@@ -169,7 +140,6 @@ class InferenceLoopService:
                 "repeat_penalty": float(record["repeat penalty"]),
             }
             quality_score = int(record["quality score"])
-            self._debug_recommendation(row_idx, suggested, gen_config, quality_score)
             self.logging_service.record_attempt(record)
 
             # ── Optimization loop ─────────────────────────────────────────────
@@ -177,7 +147,7 @@ class InferenceLoopService:
             while not self.found_optimal_model():
                 opt_iter += 1
                 recent: str = self.logging_service.get_most_recent_suggestion()
-                logger.debug("[Row %s] Opt iter %s: switching to model '%s'", row_idx, opt_iter, recent)
+                logger.info("[Row %s] Opt iter %s: switching to model '%s'", row_idx, opt_iter, recent)
                 self.load_model(recent)
                 results = self.run_conversation(
                     conversation,
@@ -188,7 +158,7 @@ class InferenceLoopService:
                     top_k=int(gen_config["top_k"]),
                     repeat_penalty=float(gen_config["repeat_penalty"]),
                 )
-                logger.debug("[Row %s] Opt iter %s: calling grader...", row_idx, opt_iter)
+                logger.info("[Row %s] Opt iter %s: calling grader...", row_idx, opt_iter)
                 record  = self.grader.run(
                     optimization_log=self.logging_service.get_optimization_history(),
                     last_inference=results,
@@ -204,7 +174,6 @@ class InferenceLoopService:
                     "repeat_penalty": float(record["repeat penalty"]),
                 }
                 quality_score = int(record["quality score"])
-                self._debug_recommendation(row_idx, suggested, gen_config, quality_score, opt_iter=opt_iter)
                 self.logging_service.record_attempt(record)
 
             logger.debug(
@@ -217,9 +186,6 @@ class InferenceLoopService:
             self.result_store.record_result(results, recommendation=final_recommendation)
             self.logging_service.clear()
 
-        logger.debug("%s", "=" * 60)
-        logger.debug("Inference loop complete. %s rows processed.", total_rows)
-        logger.debug("%s", "=" * 60)
         return self.result_store
 
     def found_optimal_model(self) -> bool:
@@ -304,20 +270,24 @@ class InferenceLoopService:
             # Send the full history to the model
             inference_output: str | None = None
             try:
-                response = requests.post(
-                    f"{server_url}/v1/chat/completions",
-                    json={
-                        "messages":   history,
-                        "max_tokens": max_tokens,
-                        "temperature": temperature,
-                        "top_p": top_p,
-                        "top_k": top_k,
-                        "repeat_penalty": repeat_penalty,
-                        "stop":       ["<|im_end|>", "<|eot_id|>", "</s>"],
-                    },
-                    timeout=10000,
-                )
-                inference_output = response.json()["choices"][0]["message"]["content"]
+                if self.stub_inference:
+                    # Fast stub path for validating orchestration without llama.cpp latency.
+                    inference_output = expected or f"STUB: {user_msg[:120]}"
+                else:
+                    response = requests.post(
+                        f"{server_url}/v1/chat/completions",
+                        json={
+                            "messages":   history,
+                            "max_tokens": max_tokens,
+                            "temperature": temperature,
+                            "top_p": top_p,
+                            "top_k": top_k,
+                            "repeat_penalty": repeat_penalty,
+                            "stop":       ["<|im_end|>", "<|eot_id|>", "</s>"],
+                        },
+                        timeout=10000,
+                    )
+                    inference_output = response.json()["choices"][0]["message"]["content"]
                 print(f"  Turn {turn_num}: got response ({len(inference_output)} chars)")
             except Exception as e:
                 print(f"  Turn {turn_num}: inference error — {e}")
@@ -344,6 +314,12 @@ class InferenceLoopService:
         Args:
             model_name: GGUF filename to load.  Defaults to self.model_name when None.
         """
+        if self.stub_inference:
+            if model_name is not None:
+                self.model_name = model_name
+            logger.debug("STUB_INFERENCE enabled: skipping load_model.")
+            return
+
         target  = model_name if model_name is not None else self.model_name
         self.model_name = target
         running = self.get_running_model()

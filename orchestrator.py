@@ -29,12 +29,14 @@ from model_manager import ModelDownloader                                  # noq
 from inference_loop_service import InferenceLoopService                    # noqa: E402
 
 #for tracing
-log_level = os.getenv("DEBUG_MODE", "INFO").upper()
-logging.basicConfig(level=log_level)
+
 
 
 def main() -> None:
     load_dotenv()
+
+    log_level = os.getenv("DEBUG_MODE", "INFO").upper()
+    logging.basicConfig(level=log_level, force=True)
 
     # Support both OPENAI_API_KEY (standard) and OPENAI_KEY (legacy alias)
     if not os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_KEY"):
