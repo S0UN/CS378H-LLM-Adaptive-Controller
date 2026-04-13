@@ -35,7 +35,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_MODELS_DIR = os.path.join(_PROJECT_ROOT, "models")
 
 DEFAULT_MODEL = os.getenv("MODEL_REPO", MODEL_REPOS["LLAMA2_7B"])
-DEFAULT_QUANT = os.getenv("MODEL_QUANT", QUANT["RECOMMENDED"])
+DEFAULT_QUANT = os.getenv("MODEL_QUANT", QUANT["TINY"])
 DEFAULT_CACHE_DIR = os.getenv("MODEL_CACHE_DIR", _DEFAULT_MODELS_DIR)
 
 # HELPER FUNCTIONS
